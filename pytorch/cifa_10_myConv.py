@@ -14,10 +14,12 @@ class ResidualBlock(nn.Module):
         self.left = nn.Sequential(
             # 替换第一个卷积层
             Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, padding=1, bias=False),
+            #nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=stride, padding=1, bias=False),
             nn.BatchNorm2d(outchannel),
             nn.ReLU(inplace=True),
             # 替换第二个卷积层
             Conv2d(outchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False),
+            #nn.Conv2d(outchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(outchannel)
         )
         self.shortcut = nn.Sequential()
@@ -25,6 +27,7 @@ class ResidualBlock(nn.Module):
             self.shortcut = nn.Sequential(
                 # 替换 shortcut 中的卷积层
                 Conv2d(inchannel, outchannel, kernel_size=1, stride=stride, bias=False),
+                #nn.Conv2d(inchannel, outchannel, kernel_size=1, stride=stride, bias=False),
                 nn.BatchNorm2d(outchannel)
             )
     def forward(self, x):
@@ -84,7 +87,7 @@ args = parser.parse_args()
 # 超参数设置
 EPOCH = 135   #遍历数据集次数
 pre_epoch = 0  # 定义已经遍历数据集的次数
-BATCH_SIZE = 128      #批处理尺寸(batch_size)
+BATCH_SIZE = 256      #批处理尺寸(batch_size)
 LR = 0.02        #学习率
 
 # 准备数据集并预处理

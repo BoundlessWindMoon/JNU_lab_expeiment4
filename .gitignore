@@ -2,9 +2,10 @@ build/
 conv2d_cuda.egg-info/
 dist/
 pytorch/__pycache__/
-pytorch/data/
-pytorch/model/
 pytorch/acc.txt
 pytorch/best_acc.txt
 pytorch/log.txt
 pytorch/test.py
+pytorch/cifa_10_myConv.py
+pytorch/cifa_10.py
+pytorch/data/
