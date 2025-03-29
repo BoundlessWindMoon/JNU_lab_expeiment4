@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
-from modules.conv_layer import Conv2d
+from modules.conv_layer_baseline import Conv2d
 
 class ResidualBlock(nn.Module):
     def __init__(self, inchannel, outchannel, stride=1):
