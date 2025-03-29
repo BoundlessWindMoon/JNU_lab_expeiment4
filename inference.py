@@ -130,31 +130,58 @@ testloader = torch.utils.data.DataLoader(
     num_workers=NUM_WORKERS,
     pin_memory=True
 )
+import matplotlib.pyplot as plt
 
+import matplotlib.pyplot as plt
 if __name__ == "__main__":
-    # Define device (GPU or CPU)
+    # 原始配置保持不变
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 初始化全局计时
     processed = len(testset)
     total_processed = processed * RUN_TIMES
-    elapsed_recorder = []  # 记录各轮实际耗时
+    elapsed_recorder = []
     
+    # 原始评估流程
     accuracy = evaluate_accuracy()
     
-    # 执行多轮推理
+    # 优化模型测试 (保留原始输出)
     for run_idx in range(1, RUN_TIMES+1):
         elapsed = process_single_run(model_optim, testloader, DEVICE, run_idx, RUN_TIMES)
         elapsed_recorder.append(elapsed)
-
+    # 保留原始计算结果和打印
     total_elapsed = sum(elapsed_recorder)
     avg_throughput = total_processed / total_elapsed
-    print(f"手写算子平均吞吐量: {avg_throughput:.2f} img/s\n")
-
+    print(f"手写算子平均吞吐量: {avg_throughput:.2f} img/s\n")  # 原打印保留
+    # 基准测试 (保留原始输出)
     baseline_elapsed = process_single_run(model_baseline, testloader, DEVICE, 1, 1)
     baseline_throughput = processed / baseline_elapsed
-    print(f"基准吞吐量: {baseline_throughput:.2f} img/s\n")
+    print(f"基准吞吐量: {baseline_throughput:.2f} img/s\n")  # 原打印保留
+    # 最终得分计算 (保留原始输出)
+    final_score = calculate_final_score(accuracy, avg_throughput, baseline_throughput)
+    print(f'最终得分: {final_score:.3f}')  # 原打印保留
+    # 新增绘图逻辑（增量部分）--------------------------------
+    # 准备绘图数据
+    optim_throughputs = []
+    for run_idx in range(RUN_TIMES):
+        current_processed = processed * (run_idx + 1)
+        current_throughput = current_processed / sum(elapsed_recorder[:run_idx+1])
+        optim_throughputs.append(current_throughput)
     
-    final_score = calculate_final_score(accuracy,avg_throughput, baseline_throughput)
-    print(f'最终得分: {final_score:.3f}')
+    speedup_ratio = [t / baseline_throughput for t in optim_throughputs]
+    run_numbers = list(range(1, RUN_TIMES+1))
+    # 绘制图表
+    plt.figure(figsize=(10, 5))
+    plt.plot(run_numbers, speedup_ratio, 
+             marker='o', label='Optimized', color='#E6550D')
+    plt.axhline(y=1, color='#3182BD', linestyle='--', label='Baseline')
+    
+    # 图表标注
+    plt.title(f'Throughput Acceleration (Final: {final_score:.2f} pts)')
+    plt.xlabel('Run Times')
+    plt.ylabel('Speedup Ratio')
+    plt.xticks(run_numbers)
+    plt.grid(axis='y', alpha=0.3)
+    plt.legend()
+    
+    # 显示图表（不影响控制台输出）
+    plt.show()
 
