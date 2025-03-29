@@ -7,3 +7,4 @@ pytorch/model/
 pytorch/acc.txt
 pytorch/best_acc.txt
 pytorch/log.txt
+pytorch/test.py
