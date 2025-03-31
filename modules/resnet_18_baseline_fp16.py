@@ -65,4 +65,19 @@ class ResNet(nn.Module):
         return out
 
 def ResNet18():
-    return ResNet(ResidualBlock)
+    model = ResNet(ResidualBlock)
+    
+    # 修改为更安全的精度模式
+    model = model.half()
+
+    # 保持这些层为FP32精度
+    for layer in model.modules():
+        if isinstance(layer, torch.nn.BatchNorm2d):
+            layer.float()
+            # 确保统计数据也使用float
+            if hasattr(layer, 'running_mean'):
+                layer.running_mean = layer.running_mean.float()
+            if hasattr(layer, 'running_var'):
+                layer.running_var = layer.running_var.float()
+    
+    return model

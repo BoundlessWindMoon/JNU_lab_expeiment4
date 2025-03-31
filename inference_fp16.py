@@ -89,22 +89,20 @@ def process_single_run(model, dataloader, device, run_num, total_runs):
         dynamic_ncols=True
     )
 
-    # 预热逻辑（FP16版本）
-    with torch.no_grad():
-        warmup_tensor = torch.randn(BATCH_SIZE, 3, 32, 32, device=device).half()
+    # 预热逻辑 - 使用autocast而不是手动转换
+    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+        warmup_tensor = torch.randn(BATCH_SIZE, 3, 32, 32, device=device)
         for _ in range(3):
-            with autocast(device_type='cuda', dtype=torch.float16):
-                _ = model(warmup_tensor)
+            _ = model(warmup_tensor)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
     # 正式推理逻辑
     run_start = time.perf_counter()
-    with torch.no_grad():
+    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.float16, enabled=True):
         for images, _ in progress_bar:
-            images = images.to(device, non_blocking=True).half()
-            with autocast(device_type='cuda', dtype=torch.float16):
-                _ = model(images)
+            images = images.to(device, non_blocking=True)
+            _ = model(images)
             
             current_time = time.perf_counter() - run_start
             current_throughput = (progress_bar.n * BATCH_SIZE) / current_time
