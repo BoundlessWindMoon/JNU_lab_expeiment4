@@ -5,8 +5,9 @@ import time
 import sys
 from tqdm import tqdm
 from torch.utils.data import ConcatDataset
-from modules.resnet_18 import ResNet18 as ResNet18_optim
-from modules.resnet_18_baseline import ResNet18 as ResNet18_baseline
+from modules.resnet_18_fp16 import ResNet18 as ResNet18_optim_fp16
+from modules.resnet_18_baseline_fp16 import ResNet18 as ResNet18_baseline_fp16
+from torch.amp import autocast
 
 # --------------------------
 # 参数配置
@@ -20,20 +21,28 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 PROGRESS_UNIT = "img"
 
 # --------------------------
-# 模型加载（FP32版本）
+# 模型加载（FP16版本）
 # --------------------------
 def load_model(model_path, model_type='baseline'):
     # 根据类型选择模型类
     if model_type == 'optim':
-        model = ResNet18_optim()
+        model = ResNet18_optim_fp16()
     elif model_type == 'baseline':
-        model = ResNet18_baseline()
+        model = ResNet18_baseline_fp16()
     else:
         raise ValueError(f"Invalid model_type: {model_type}. Choose ['optim', 'baseline']")
 
     checkpoint = torch.load(model_path, map_location=DEVICE, weights_only=False)
     model.load_state_dict(checkpoint)
     model = model.to(DEVICE).eval()
+    
+    # 完整的 FP16 转换
+    model = model.half()
+    for layer in model.modules():
+        if isinstance(layer, torch.nn.BatchNorm2d):
+            # 保持批量归一化层为 float32
+            layer.float()
+    
     return model
     
 model_optim = load_model(MODEL_PATH, model_type='optim')
@@ -48,13 +57,11 @@ def calculate_final_score(accuracy, throughput_optim, throughput_baseline):
     final_score = accuracy_weight * (accuracy / 10) + speed_weight * normalized_throughput
     return min(final_score, 100)
 
-from torch.amp import autocast
-
-# Evaluate accuracy
+# Evaluate accuracy with FP16
 def evaluate_accuracy():
     correct = 0
     total = 0
-    with torch.no_grad():
+    with torch.no_grad(), autocast(device_type='cuda', dtype=torch.float16):
         for data in testloader:
             images, labels = data
             images = images.to(device)
@@ -64,10 +71,10 @@ def evaluate_accuracy():
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
     accuracy = 100 * correct / total
-    print(f'Accuracy (FP32): {accuracy:.3f}%')
+    print(f'Accuracy (FP16): {accuracy:.3f}%')
     if accuracy < 87:
-        print("[警告] 精度低于预期，但继续运行以进行性能测试")
-
+        print("[警告] FP16精度低于预期，但继续执行以进行性能测试")
+    
     return accuracy
 
 def process_single_run(model, dataloader, device, run_num, total_runs):
@@ -82,11 +89,12 @@ def process_single_run(model, dataloader, device, run_num, total_runs):
         dynamic_ncols=True
     )
 
-    # 预热逻辑（FP32版本）
+    # 预热逻辑（FP16版本）
     with torch.no_grad():
-        warmup_tensor = torch.randn(BATCH_SIZE, 3, 32, 32, device=device)
+        warmup_tensor = torch.randn(BATCH_SIZE, 3, 32, 32, device=device).half()
         for _ in range(3):
-            _ = model(warmup_tensor)
+            with autocast(device_type='cuda', dtype=torch.float16):
+                _ = model(warmup_tensor)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
@@ -94,8 +102,9 @@ def process_single_run(model, dataloader, device, run_num, total_runs):
     run_start = time.perf_counter()
     with torch.no_grad():
         for images, _ in progress_bar:
-            images = images.to(device, non_blocking=True)
-            _ = model(images)
+            images = images.to(device, non_blocking=True).half()
+            with autocast(device_type='cuda', dtype=torch.float16):
+                _ = model(images)
             
             current_time = time.perf_counter() - run_start
             current_throughput = (progress_bar.n * BATCH_SIZE) / current_time
@@ -112,7 +121,7 @@ def process_single_run(model, dataloader, device, run_num, total_runs):
 
 
 # --------------------------
-# 数据加载（调整为原始测试集）
+# 数据加载
 # --------------------------
 transform = transforms.Compose([
     transforms.ToTensor(),
@@ -132,10 +141,9 @@ testloader = torch.utils.data.DataLoader(
 )
 import matplotlib.pyplot as plt
 
-import matplotlib.pyplot as plt
 if __name__ == "__main__":
     print("=" * 50)
-    print("ResNet-18 FP32 (单精度) 推理性能测试")
+    print("ResNet-18 FP16 (半精度) 推理性能测试")
     print("=" * 50)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -146,22 +154,24 @@ if __name__ == "__main__":
     # 原始评估流程
     accuracy = evaluate_accuracy()
     
-    # 优化模型测试 (保留原始输出)
+    # 优化模型测试
     for run_idx in range(1, RUN_TIMES+1):
         elapsed = process_single_run(model_optim, testloader, DEVICE, run_idx, RUN_TIMES)
         elapsed_recorder.append(elapsed)
-    # 保留原始计算结果和打印
+    
     total_elapsed = sum(elapsed_recorder)
     avg_throughput = total_processed / total_elapsed
-    print(f"手写算子平均吞吐量: {avg_throughput:.2f} img/s\n")  # 原打印保留
-    # 基准测试 (保留原始输出)
+    print(f"FP16手写算子平均吞吐量: {avg_throughput:.2f} img/s\n")
+    
+    # 基准测试
     baseline_elapsed = process_single_run(model_baseline, testloader, DEVICE, 1, 1)
     baseline_throughput = processed / baseline_elapsed
-    print(f"基准吞吐量: {baseline_throughput:.2f} img/s\n")  # 原打印保留
-    # 最终得分计算 (保留原始输出)
+    print(f"FP16基准吞吐量: {baseline_throughput:.2f} img/s\n")
+    
+    # 最终得分计算
     final_score = calculate_final_score(accuracy, avg_throughput, baseline_throughput)
-    print(f'最终得分: {final_score:.3f}')  # 原打印保留
-    # 新增绘图逻辑（增量部分）--------------------------------
+    print(f'FP16最终得分: {final_score:.3f}')
+    
     # 准备绘图数据
     optim_throughputs = []
     for run_idx in range(RUN_TIMES):
@@ -171,20 +181,21 @@ if __name__ == "__main__":
     
     speedup_ratio = [t / baseline_throughput for t in optim_throughputs]
     run_numbers = list(range(1, RUN_TIMES+1))
+    
     # 绘制图表
     plt.figure(figsize=(10, 5))
     plt.plot(run_numbers, speedup_ratio, 
-             marker='o', label='Optimized', color='#E6550D')
-    plt.axhline(y=1, color='#3182BD', linestyle='--', label='Baseline')
+             marker='o', label='FP16 Optimized', color='#E6550D')
+    plt.axhline(y=1, color='#3182BD', linestyle='--', label='FP16 Baseline')
     
     # 图表标注
-    plt.title(f'FP32 Throughput Acceleration (Final: {final_score:.2f} pts)')
+    plt.title(f'FP16 Throughput Acceleration (Final: {final_score:.2f} pts)')
     plt.xlabel('Run Times')
     plt.ylabel('Speedup Ratio (vs Baseline)')
     plt.xticks(run_numbers)
     plt.grid(axis='y', alpha=0.3)
     plt.legend()
     
-    # 显示图表（不影响控制台输出）
+    # 显示图表
+    plt.savefig('fp16_performance.png')
     plt.show()
-
