@@ -1,7 +1,7 @@
 #include <torch/extension.h>
 #include <vector>
 
-#include "conv2d.h"
+#include "conv2d_fp32.h"
 
 // CUDA forward/backward declarations
 

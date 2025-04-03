@@ -1,5 +1,5 @@
 #include <torch/extension.h>
-#include "conv2d.h"
+#include "conv2d_fp16.h"
 
 // CUDA convolution forward implementation
 
@@ -22,11 +22,11 @@ __global__ void implgemm(param_t param)
     int y = by * 128 + weight_lds_addr;
     int z = blockIdx.z;
 
-    __shared__ float smeminput[8 * 128];
-    __shared__ float smemweight[8 * 132];
+    __shared__ DTYPE smeminput[8 * 128];
+    __shared__ DTYPE smemweight[8 * 132];
 
-    float weight_ldg_reg[4];
-    float input_ldg_reg[4];
+    DTYPE weight_ldg_reg[4];
+    DTYPE input_ldg_reg[4];
     // 当前线程处理的数据点在oh、ow上的坐标
     int posh_ori[4];
     int posw_ori[4];
@@ -47,16 +47,16 @@ __global__ void implgemm(param_t param)
                                (tx / 8) * 4;
     uint32_t input_sts_addr = (tx / 32) * 128 + (tx % 32);
 
-    float weight_frag[8];
-    float input_frag[8];
-    float output_frag[8][8];
+    DTYPE weight_frag[8];
+    DTYPE input_frag[8];
+    DTYPE output_frag[8][8];
 #pragma unroll
     for (int i = 0; i < 8; ++i)
     {
 #pragma unroll
         for (int j = 0; j < 8; ++j)
         {
-            output_frag[i][j] = 0;
+            output_frag[i][j] = __float2half(0.0f);
         }
     }
 
@@ -73,7 +73,7 @@ __global__ void implgemm(param_t param)
             }
             else
             {
-                weight_ldg_reg[i] = 0.0;
+                weight_ldg_reg[i] = __float2half(0.0f);
             }
         }
         int curC = (crs + tx / 32) / (param.r * param.s);             // channel offset
@@ -92,7 +92,7 @@ __global__ void implgemm(param_t param)
             }
             else
             {
-                input_ldg_reg[i] = 0.0;
+                input_ldg_reg[i] = __float2half(0.0f);
             }
         }
         //sts
@@ -127,7 +127,7 @@ __global__ void implgemm(param_t param)
 #pragma unroll
                 for (int j = 0; j < 8; ++j)
                 {
-                    output_frag[i][j] += weight_frag[i] * input_frag[j];
+                    output_frag[i][j] = __hadd(output_frag[i][j], __hmul(weight_frag[i] , input_frag[j]));
                 }
             }
         }
@@ -179,75 +179,6 @@ void conv2d_cuda_forward(param_t param)
     implgemm<<<grid, block>>>(param);
 }
 
-// __global__ void directConvolution(param_t param) 
-// {
-
-//     int x = blockIdx.x * blockDim.x + threadIdx.x;
-//     int y = blockIdx.y * blockDim.y + threadIdx.y;
-//     int z = blockIdx.z;
-
-//     if (x >= param.Oh * param.Ow || y >= param.k || z >= param.n)
-//     {
-//         return;
-//     }
-
-//     // 当前线程处理的数据点在oh、ow上的坐标
-//     int posOh = x / param.Ow;
-//     int posOw = x % param.Ow;
-
-//     int posh_ori = posOh * param.u - param.p;
-//     int posw_ori = posOw * param.v - param.q;
-
-//     float sum = 0.0;
-
-//     int inOffset = z * param.c * param.h * param.w + posh_ori * param.w + posw_ori;
-//     int weiOffset = y * param.c * param.r * param.s;
-//     int inChannelOffset = param.h * param.w;
-//     int weightChannelOffset = param.r * param.s;
-
-//     for (int i = 0; i < param.r; i++)
-//     {
-//         for (int j = 0; j < param.s; j++)
-//         {
-//             int posh_real = posh_ori + i;
-//             int posw_real = posw_ori + j;
-
-//             if (posh_real >= 0 && posw_real >= 0 && posw_real < param.w && posh_real < param.h)
-//             {
-//                 int inOffsetTmp = inOffset;
-//                 int weiOffsetTmp = weiOffset;
-//                 for (int channel = 0; channel < param.c; channel++)
-//                 {
-//                     sum += (float)(param.input[inOffsetTmp + i * param.w + j] * param.weight[weiOffsetTmp + i * param.s + j]);
-//                     inOffsetTmp += inChannelOffset;
-//                     weiOffsetTmp += weightChannelOffset;
-//                 }
-//             }
-//         }
-//     }
-
-//     // 计算输出偏移
-//     int outOffset = z * param.k * param.Oh * param.Ow + y * param.Oh * param.Ow + x;
-//     param.output[outOffset] = sum;
-// }
-
-
-// void conv2d_cuda_forward(param_t param) {
-//     // 线程块配置（每个线程处理4个ow）
-//     const dim3 block(16, 16);  // x:oh方向, y:k方向, z:ow方向
-//     const dim3 grid(
-//         (param.Oh*param.Ow+15) / 16,   // 高度方向
-//         (param.k+15) / 16,    // 通道方向
-//         param.n                                // 批次方向
-//     );
-    
-//     directConvolution<<<grid, block>>>(param);
-// }
-
-
-// 直接卷积核函数
-
-
 // CUDA convolution backward implementation
 
 __global__ void implgemmbwddata(param_t param)
@@ -269,11 +200,11 @@ __global__ void implgemmbwddata(param_t param)
     int y = by * 128 + weight_lds_addr;
     int z = blockIdx.z;
 
-    __shared__ float smemgradoutput[8 * 128];
-    __shared__ float smemweight[8 * 132];
+    __shared__ DTYPE smemgradoutput[8 * 128];
+    __shared__ DTYPE smemweight[8 * 132];
 
-    float weight_ldg_reg[4];
-    float gradoutput_ldg_reg[4];
+    DTYPE weight_ldg_reg[4];
+    DTYPE gradoutput_ldg_reg[4];
     // 当前线程处理的数据点在oh、ow上的坐标
     int posOh_ori[4];
     int posOw_ori[4];
@@ -295,16 +226,16 @@ __global__ void implgemmbwddata(param_t param)
                                (tx / 8) * 4;
     uint32_t gradoutput_sts_addr = (tx / 32) * 128 + (tx % 32);
 
-    float weight_frag[8];
-    float gradoutput_frag[8];
-    float gradinput_frag[8][8];
+    DTYPE weight_frag[8];
+    DTYPE gradoutput_frag[8];
+    DTYPE gradinput_frag[8][8];
 #pragma unroll
     for (int i = 0; i < 8; ++i)
     {
 #pragma unroll
         for (int j = 0; j < 8; ++j)
         {
-            gradinput_frag[i][j] = 0;
+            gradinput_frag[i][j] = __float2half(0.0f);
         }
     }
 
@@ -323,7 +254,7 @@ __global__ void implgemmbwddata(param_t param)
             }
             else
             {
-                weight_ldg_reg[i] = 0.0;
+                weight_ldg_reg[i] = __float2half(0.0f);
             }
         }
         int curK2 = (krs + tx / 32) / (param.r * param.s);            // kernel k offset
@@ -342,7 +273,7 @@ __global__ void implgemmbwddata(param_t param)
             }
             else
             {
-                gradoutput_ldg_reg[i] = 0.0;
+                gradoutput_ldg_reg[i] = __float2half(0.0f);
             }
         }
         // sts
@@ -377,7 +308,7 @@ __global__ void implgemmbwddata(param_t param)
 #pragma unroll
                 for (int j = 0; j < 8; ++j)
                 {
-                    gradinput_frag[i][j] += weight_frag[i] * gradoutput_frag[j];
+                    gradinput_frag[i][j] = __hadd(gradinput_frag[i][j], __hmul(weight_frag[i] , gradoutput_frag[j]));
                 }
             }
         }
@@ -434,8 +365,8 @@ __global__ void implgemmbwdweight(param_t param)
     int y = by * 128 + gradoutput_lds_addr;
     int z = blockIdx.z;
 
-    __shared__ float smeminput[8 * 128];
-    __shared__ float smemgradoutput[8 * 132];
+    __shared__ DTYPE smeminput[8 * 128];
+    __shared__ DTYPE smemgradoutput[8 * 132];
     // 当前线程处理的数据点在oh、ow上的坐标
     int posh_ori[4];
     int posw_ori[4];
@@ -457,16 +388,16 @@ __global__ void implgemmbwdweight(param_t param)
                                    (tx / 8) * 4;
     uint32_t input_sts_addr = (tx / 32) * 128 + (tx % 32);
 
-    float gradoutput_frag[8];
-    float input_frag[8];
-    float gradweight_frag[8][8];
+    DTYPE gradoutput_frag[8];
+    DTYPE input_frag[8];
+    DTYPE gradweight_frag[8][8];
 #pragma unroll
     for (int i = 0; i < 8; ++i)
     {
 #pragma unroll
         for (int j = 0; j < 8; ++j)
         {
-            gradweight_frag[i][j] = 0;
+            gradweight_frag[i][j] = __float2half(0.0f);
         }
     }
 
@@ -484,7 +415,7 @@ __global__ void implgemmbwdweight(param_t param)
             }
             else
             {
-                smemgradoutput[gradoutput_sts_addr + i] = 0.0;
+                smemgradoutput[gradoutput_sts_addr + i] = __float2half(0.0f);
             }
         }
 
@@ -504,7 +435,7 @@ __global__ void implgemmbwdweight(param_t param)
             }
             else
             {
-                smeminput[input_sts_addr + i * 32] = 0.0;
+                smeminput[input_sts_addr + i * 32] = __float2half(0.0f);
             }
         }
         __syncthreads();
@@ -530,7 +461,7 @@ __global__ void implgemmbwdweight(param_t param)
 #pragma unroll
                 for (int j = 0; j < 8; ++j)
                 {
-                    gradweight_frag[i][j] += gradoutput_frag[i] * input_frag[j];
+                    gradweight_frag[i][j] = __hadd(gradweight_frag[i][j], __hmul(gradoutput_frag[i] , input_frag[j]));
                 }
             }
         }

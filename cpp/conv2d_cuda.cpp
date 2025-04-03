@@ -1,10 +1,9 @@
 #include <torch/extension.h>
 #include <vector>
 
-#include "conv2d.h"
+#include "conv2d_fp16.h"
 
 // CUDA forward/backward declarations
-
 void conv2d_cuda_forward(param_t param);
 
 void conv2d_cuda_backward(param_t param);
@@ -30,8 +29,9 @@ torch::Tensor conv2d_forward(
     // Convolution parameter
 
     param_t param;
-    param.input = (float *)input.data_ptr();
-    param.weight = (float *)weight.data_ptr();
+// 使用模板函数安全获取半精度指针
+    param.input = reinterpret_cast<DTYPE*>(input.data_ptr<torch::Half>());
+    param.weight = reinterpret_cast<DTYPE*>(weight.data_ptr<torch::Half>());
     param.n = input.size(0);
     param.c = input.size(1);
     param.h = input.size(2);
@@ -50,10 +50,12 @@ torch::Tensor conv2d_forward(
     param.Oh = outh;
     param.Ow = outw;
 
+    // auto output = torch::zeros(torch::IntArrayRef({input.size(0), weight.size(0), outh, outw}),
+    //                            input.options());
     auto output = torch::zeros(torch::IntArrayRef({input.size(0), weight.size(0), outh, outw}),
-                               input.options());
+                               input.options().dtype(torch::kHalf));
 
-    param.output = (float *)output.data_ptr();
+    param.output = (DTYPE *)output.data_ptr();
     conv2d_cuda_forward(param);
     return output;
 }
@@ -72,9 +74,9 @@ std::vector<torch::Tensor> conv2d_backward(
     // Convolution parameter
 
     param_t param;
-    param.input = (float *)input.data_ptr();
-    param.grad_output = (float *)grad_output.data_ptr();
-    param.weight = (float *)weight.data_ptr();
+    param.input = (DTYPE *)input.data_ptr();
+    param.grad_output = (DTYPE *)grad_output.data_ptr();
+    param.weight = (DTYPE *)weight.data_ptr();
     param.n = input.size(0);
     param.c = input.size(1);
     param.h = input.size(2);
@@ -94,12 +96,12 @@ std::vector<torch::Tensor> conv2d_backward(
     param.Ow = outw;
 
     auto grad_input = torch::zeros(torch::IntArrayRef({input.size(0), input.size(1), input.size(2), input.size(3)}),
-                                    grad_output.options());
+                                    grad_output.options().dtype(torch::kHalf));
     auto grad_weight = torch::zeros(torch::IntArrayRef({weight.size(0), input.size(1), weight.size(2), weight.size(3)}),
-                                    grad_output.options());
+                                    grad_output.options().dtype(torch::kHalf));
 
-    param.grad_input = (float *)grad_input.data_ptr();
-    param.grad_weight = (float *)grad_weight.data_ptr();
+    param.grad_input = (DTYPE *)grad_input.data_ptr();
+    param.grad_weight = (DTYPE *)grad_weight.data_ptr();
     conv2d_cuda_backward(param);
     return {grad_input, grad_weight};
 }

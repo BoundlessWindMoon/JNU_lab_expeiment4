@@ -1,5 +1,5 @@
 #include <torch/extension.h>
-#include "conv2d.h"
+#include "conv2d_fp32.h"
 
 // CUDA convolution forward implementation
 

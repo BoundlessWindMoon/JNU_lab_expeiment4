@@ -1,12 +1,13 @@
 #include <torch/types.h>
+#define DTYPE float
 typedef struct
 {
-    float*   input;                                   //输入数据地址
-    float*   grad_input;                              //输入梯度数据地址
-    float*   weight;                                  //权值数据地址
-    float*   grad_weight;                             //权值梯度数据地址
-    float*   output;                                  //输出数据地址
-    float*   grad_output;                             //输出梯度数据地址
+    DTYPE*   input;                                   //输入数据地址
+    DTYPE*   grad_input;                              //输入梯度数据地址
+    DTYPE*   weight;                                  //权值数据地址
+    DTYPE*   grad_weight;                             //权值梯度数据地址
+    DTYPE*   output;                                  //输出数据地址
+    DTYPE*   grad_output;                             //输出梯度数据地址
     unsigned int      n;                              //batch szie              
     unsigned int      c;                              //channel number          
     unsigned int      h;                              //数据高                  
