@@ -13,17 +13,18 @@ from modules.resnet_18_baseline import ResNet18 as ResNet18_baseline
 # --------------------------
 MODEL_PATH = "./pytorch/model/net_123.pth"
 DATA_ROOT = "./pytorch/data"
+MODEL_DTYPE = "FP16"
 BATCH_SIZE = 256
 NUM_WORKERS = 4
-RUN_TIMES = 5  # 新增运行次数参数
+RUN_TIMES = 5  
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 PROGRESS_UNIT = "img"
 
 # --------------------------
 # 模型加载（保持原样）
 # --------------------------
-def load_model(model_path, model_type='baseline'):
-    # 根据类型选择模型类
+def load_model(model_path, model_type='baseline', model_dtype='FP32'):
+    
     if model_type == 'optim':
         model = ResNet18_optim()
     elif model_type == 'baseline':
@@ -33,29 +34,31 @@ def load_model(model_path, model_type='baseline'):
 
     checkpoint = torch.load(model_path, map_location=DEVICE,weights_only=False)
     model.load_state_dict(checkpoint)
-    model = model.to(DEVICE).eval()
+    dtype = torch.half if model_dtype=="FP16" else torch.float32
+    model = model.to(DEVICE, dtype=dtype)
+    model.eval()
     return model
     
-model_optim = load_model(MODEL_PATH, model_type='optim')
-model_baseline = load_model(MODEL_PATH, model_type='baseline')
+model_optim = load_model(MODEL_PATH, model_type='optim', model_dtype=MODEL_DTYPE)
+model_baseline = load_model(MODEL_PATH, model_type='baseline', model_dtype="FP32")
 
 def calculate_final_score(accuracy, throughput_optim, throughput_baseline):
     accuracy_weight = 4
-    speed_weight = 15
+    speed_weight = 4.5
     
     normalized_throughput = throughput_optim / throughput_baseline
 
     final_score = accuracy_weight * (accuracy / 10) + speed_weight * normalized_throughput
     return min(final_score, 100)
 
-# Evaluate accuracy
 def evaluate_accuracy():
     correct = 0
     total = 0
     with torch.no_grad():
+        model_dtype = next(model_optim.parameters()).dtype
         for data in testloader:
             images, labels = data
-            images, labels = images.to(device), labels.to(device)
+            images, labels = images.to(device=device, dtype=model_dtype), labels.to(device)
             outputs = model_optim(images)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
@@ -68,39 +71,39 @@ def evaluate_accuracy():
 
     return accuracy
 
-def process_single_run(model, dataloader, device, run_num, total_runs):
+def process_single_run(model, dataloader, device, run_num, total_runs,model_dtype='FP32'):
     total_images = len(dataloader.dataset)
     start_time = time.perf_counter()
     
     progress_bar = tqdm(
         dataloader,
         desc=f"轮次 {run_num:02d}/{total_runs}",
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}",  # 保持postfix占位符
-        unit='img',  # 关键修正点：使用字符串单位
-        unit_scale=BATCH_SIZE,  # 在此处设置缩放比例
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}",  
+        unit='img', 
+        unit_scale=BATCH_SIZE,  
         dynamic_ncols=True
     )
 
-    # 预热逻辑保持不变
     with torch.no_grad():
-        warmup_tensor = torch.randn(BATCH_SIZE,3,32,32).to(device)
+        #warmup_tensor = torch.randn(BATCH_SIZE,3,32,32).to(device)
+        #warmup_tensor = torch.randn(BATCH_SIZE,3,32,32, dtype=torch.half).to(device)
+        warmup_dtype = torch.half if model_dtype=="FP16" else torch.float32
+        warmup_tensor = torch.randn(BATCH_SIZE,3,32,32, dtype=warmup_dtype).to(device)
         for _ in range(3):
             _ = model(warmup_tensor)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
-    # 正式推理逻辑
     run_start = time.perf_counter()
     with torch.no_grad():
         for images, _ in progress_bar:
-            images = images.to(device, non_blocking=True)
+            #images = images.half().to(device, non_blocking=True)
+            images = images.to(device=device, dtype=warmup_dtype, non_blocking=True)
             _ = model(images)
             
             current_time = time.perf_counter() - run_start
             current_throughput = (progress_bar.n * BATCH_SIZE) / current_time
-            #progress_bar.set_postfix_str(f"{current_throughput:.1f} img/s")  # 保持字符串格式
 
-    # 最终计算
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     run_elapsed = time.perf_counter() - run_start
@@ -130,36 +133,31 @@ testloader = torch.utils.data.DataLoader(
     num_workers=NUM_WORKERS,
     pin_memory=True
 )
-import matplotlib.pyplot as plt
 
 import matplotlib.pyplot as plt
 if __name__ == "__main__":
-    # 原始配置保持不变
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     processed = len(testset)
     total_processed = processed * RUN_TIMES
     elapsed_recorder = []
     
-    # 原始评估流程
     accuracy = evaluate_accuracy()
     
-    # 优化模型测试 (保留原始输出)
     for run_idx in range(1, RUN_TIMES+1):
-        elapsed = process_single_run(model_optim, testloader, DEVICE, run_idx, RUN_TIMES)
+        elapsed = process_single_run(model_optim, testloader, DEVICE, run_idx, RUN_TIMES, model_dtype=MODEL_DTYPE)
         elapsed_recorder.append(elapsed)
-    # 保留原始计算结果和打印
+
     total_elapsed = sum(elapsed_recorder)
     avg_throughput = total_processed / total_elapsed
-    print(f"手写算子平均吞吐量: {avg_throughput:.2f} img/s\n")  # 原打印保留
-    # 基准测试 (保留原始输出)
-    baseline_elapsed = process_single_run(model_baseline, testloader, DEVICE, 1, 1)
+    print(f"手写算子平均吞吐量: {avg_throughput:.2f} img/s\n")  
+    
+    baseline_elapsed = process_single_run(model_baseline, testloader, DEVICE, 1, 1,model_dtype="FP32")
     baseline_throughput = processed / baseline_elapsed
-    print(f"基准吞吐量: {baseline_throughput:.2f} img/s\n")  # 原打印保留
-    # 最终得分计算 (保留原始输出)
+    print(f"基准吞吐量: {baseline_throughput:.2f} img/s\n")  
+    
     final_score = calculate_final_score(accuracy, avg_throughput, baseline_throughput)
-    print(f'最终得分: {final_score:.3f}')  # 原打印保留
-    # 新增绘图逻辑（增量部分）--------------------------------
-    # 准备绘图数据
+    print(f'最终得分: {final_score:.3f}')  
+    
     optim_throughputs = []
     for run_idx in range(RUN_TIMES):
         current_processed = processed * (run_idx + 1)
@@ -168,13 +166,12 @@ if __name__ == "__main__":
     
     speedup_ratio = [t / baseline_throughput for t in optim_throughputs]
     run_numbers = list(range(1, RUN_TIMES+1))
-    # 绘制图表
+    
     plt.figure(figsize=(10, 5))
     plt.plot(run_numbers, speedup_ratio, 
              marker='o', label='Optimized', color='#E6550D')
     plt.axhline(y=1, color='#3182BD', linestyle='--', label='Baseline')
     
-    # 图表标注
     plt.title(f'Throughput Acceleration (Final: {final_score:.2f} pts)')
     plt.xlabel('Run Times')
     plt.ylabel('Speedup Ratio')
@@ -182,6 +179,5 @@ if __name__ == "__main__":
     plt.grid(axis='y', alpha=0.3)
     plt.legend()
     
-    # 显示图表（不影响控制台输出）
     plt.show()
 
