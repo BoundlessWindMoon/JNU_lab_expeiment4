@@ -14,7 +14,7 @@ from modules.resnet_18_baseline import ResNet18 as ResNet18_baseline
 # --------------------------
 MODEL_PATH = "./pytorch/model/net_123.pth"
 DATA_ROOT = "./pytorch/data"
-MODEL_DTYPE = "FP32"  # 优化模型的推理精度
+MODEL_DTYPE = "FP16"  # 优化模型的推理精度
 BATCH_SIZES = [8, 16, 32, 64, 128, 256, 512]  # 需要测试的batch size列表
 NUM_WORKERS = 4
 RUN_TIMES = 1  # 每个batch size的测试轮次（仅优化模型）
@@ -114,6 +114,7 @@ if __name__ == "__main__":
         images = images.to(DEVICE, dtype=torch.half if MODEL_DTYPE == "FP16" else torch.float32)
         outputs = model_optim(images)
         preds = outputs.argmax(dim=1).cpu()
+
     # 可视化设置
     plt.figure(figsize=(15, 12))
     for i in range(50):
