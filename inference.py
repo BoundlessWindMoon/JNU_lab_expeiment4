@@ -6,7 +6,7 @@ import sys
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from modules.resnet_18 import ResNet18 as ResNet18_optim
+from modules.resnet_18_optim_fp16 import ResNet18 as ResNet18_optim
 from modules.resnet_18_baseline_fp32 import ResNet18 as ResNet18_baseline
 
 # --------------------------

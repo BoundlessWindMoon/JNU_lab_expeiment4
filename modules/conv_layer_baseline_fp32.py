@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import conv2d_baseline_fp32
+import conv2d_baseline_fp32 as conv2d
 import math
 from torch.nn.common_types import _size_1_t, _size_2_t, _size_3_t
 from torch.nn.modules.utils import _single, _pair, _triple, _reverse_repeat_tuple
@@ -12,7 +12,7 @@ class Conv2DFunction(torch.autograd.Function):
     def forward(ctx, input, weight, params):
         stride = _pair(params[0])
         padding = _pair(params[1])
-        output = conv2d_baseline_cuda.forward(input.contiguous(),weight.contiguous(),(stride),(padding))
+        output = conv2d.forward(input.contiguous(),weight.contiguous(),(stride),(padding))
         variables = [input, weight, params]
         ctx.save_for_backward(*variables)
         return output
@@ -22,7 +22,7 @@ class Conv2DFunction(torch.autograd.Function):
         input, weight, params = ctx.saved_variables 
         stride = _pair(params[0])
         padding = _pair(params[1])
-        grad_input,grad_weight = conv2d_baseline_cuda.backward(input.contiguous(), grad_output.contiguous(), weight.contiguous(),(stride),(padding))
+        grad_input,grad_weight = conv2d.backward(input.contiguous(), grad_output.contiguous(), weight.contiguous(),(stride),(padding))
         return grad_input, grad_weight, None
     
 

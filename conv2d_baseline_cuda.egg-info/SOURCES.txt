@@ -1,7 +1,0 @@
-README.md
-conv2d_baseline_cuda.egg-info/PKG-INFO
-conv2d_baseline_cuda.egg-info/SOURCES.txt
-conv2d_baseline_cuda.egg-info/dependency_links.txt
-conv2d_baseline_cuda.egg-info/top_level.txt
-cpp/conv2d_baseline_cuda.cpp
-cuda/conv2d_baseline_cuda_kernel.cu
