@@ -1,183 +1,100 @@
 #include <torch/extension.h>
+#include <mma.h>
 #include "conv2d_fp16.h"
 
 // CUDA convolution forward implementation
 
-__global__ void implgemm(param_t param)
-{
-    uint32_t tx = threadIdx.x;
-    int bx = blockIdx.x;
-    int by = blockIdx.y;
+__global__ void implgemm(param_t param) {
+    // 每个线程处理4个k通道（原threadIdx.y对应4个k）
+    const int ohow = blockIdx.x * 16 + threadIdx.x;     // Oh*Ow维度
+    const int k_base = blockIdx.y * 64 + threadIdx.y *4; // 每个线程处理4个k
+    const int n = blockIdx.z;                           // 批次索引
 
-    // Warp tile
-    const uint32_t lane_id = threadIdx.x % 32;
-    const uint32_t warp_id = threadIdx.x / 32;
-    const uint32_t mma_tid_x = (lane_id / 2) % 8;
-    const uint32_t mma_tid_y = (lane_id / 16) * 2 + (lane_id % 2);
-    // lds addr
-    uint32_t weight_lds_addr = (warp_id / 2) * 32 + mma_tid_y * 4;
-    uint32_t input_lds_addr = (warp_id % 2) * 64 + mma_tid_x * 4;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
 
-    int x = bx * 128 + input_lds_addr;
-    int y = by * 128 + weight_lds_addr;
-    int z = blockIdx.z;
+    // 扩大共享内存以容纳4个k的权重（64行x16列）
+    __shared__ DTYPE sh_input[16][16];
+    __shared__ DTYPE sh_weight[64][16];  // 原16行扩展为64行
 
-    __shared__ DTYPE smeminput[8 * 128];
-    __shared__ DTYPE smemweight[8 * 132];
+    const int oh = ohow / param.Ow;
+    const int ow = ohow % param.Ow;
+    const int ih_start = oh * param.u - param.p;
+    const int iw_start = ow * param.v - param.q;
 
-    DTYPE weight_ldg_reg[4];
-    DTYPE input_ldg_reg[4];
-    // 当前线程处理的数据点在oh、ow上的坐标
-    int posh_ori[4];
-    int posw_ori[4];
-#pragma unroll
-    for (int i = 0; i < 4; ++i)
-    {
-        posh_ori[i] = ((bx * 128 + tx % 32 + i * 32) / param.Ow) * param.u - param.p;
-        posw_ori[i] = ((bx * 128 + tx % 32 + i * 32) % param.Ow) * param.v - param.q;
-    }
+    // 每个线程维护4个累加器
+    DTYPE sum[4] = {__float2half(0.0f), __float2half(0.0f), 
+                   __float2half(0.0f), __float2half(0.0f)};
 
-    int inOffset = z * param.c * param.h * param.w;
-    int weiOffset = (by * 128 + tx / 8 * 4) * param.c * param.r * param.s;
-    int inChannelOffset = param.h * param.w;
-    int weightKOffset = param.c * param.r * param.s;
+    const int n_offset = n * param.c * param.h * param.w;
+    const int crs_total = param.c * param.r * param.s;
 
-    // sts addr
-    uint32_t weight_sts_addr = (tx % 8) * 132 +
-                               (tx / 8) * 4;
-    uint32_t input_sts_addr = (tx / 32) * 128 + (tx % 32);
+    for (int base = 0; base < crs_total; base += 16) {
+        // 加载输入数据（与k无关，保持原逻辑）
+        int crs_idx = base + tx;
+        const int c = (base + ty) / (param.r * param.s);
+        const int r = (base + ty) % (param.r * param.s) / param.s;
+        const int s = (base + ty) % (param.r * param.s) % param.s;
+        const int ih = ih_start + r;
+        const int iw = iw_start + s;
 
-    DTYPE weight_frag[8];
-    DTYPE input_frag[8];
-    DTYPE output_frag[8][8];
-#pragma unroll
-    for (int i = 0; i < 8; ++i)
-    {
-#pragma unroll
-        for (int j = 0; j < 8; ++j)
-        {
-            output_frag[i][j] = __float2half(0.0f);
+        if (ih >= 0 && iw >= 0 && ih < param.h && iw < param.w) {
+            sh_input[ty][tx] = param.input[n_offset + c * param.h * param.w + 
+                                         ih * param.w + iw];
+        } else {
+            sh_input[ty][tx] = __float2half(0.0f);
         }
-    }
 
-    for (int crs = 0; crs < param.r * param.s * param.c; crs += 8)
-    {
-        //ldg
-        int weiOffsetTmp = crs + tx % 8;
-#pragma unroll
-        for (int i = 0; i < 4; ++i)
-        {
-            if (weiOffsetTmp < weightKOffset)
-            {
-                weight_ldg_reg[i] = param.weight[weiOffset + weiOffsetTmp + i * weightKOffset];
-            }
-            else
-            {
-                weight_ldg_reg[i] = __float2half(0.0f);
+        // 加载4个k通道的权重到共享内存的不同行
+        #pragma unroll
+        for (int i = 0; i < 4; i++) {
+            int k = k_base + i;
+            if (k < param.k) {
+                sh_weight[ty * 4 + i][tx] = (crs_idx < crs_total) ? 
+                    param.weight[k * crs_total + crs_idx] : __float2half(0.0f);
             }
         }
-        int curC = (crs + tx / 32) / (param.r * param.s);             // channel offset
-        int curR = ((crs + tx / 32) % (param.r * param.s)) / param.s; // kernel r offset
-        int curS = ((crs + tx / 32) % (param.r * param.s)) % param.s; // kernel s offset
 
-#pragma unroll
-        for (int i = 0; i < 4; ++i)
-        {
-            int curH = posh_ori[i] + curR; // input h
-            int curW = posw_ori[i] + curS; // input w
-            int inOffsetTmp = curC * inChannelOffset + curH * param.w + curW;
-            if (curH >= 0 && curW >= 0 && curW < param.w && curH < param.h)
-            {
-                input_ldg_reg[i] = param.input[inOffset + inOffsetTmp];
-            }
-            else
-            {
-                input_ldg_reg[i] = __float2half(0.0f);
-            }
-        }
-        //sts
-        for (int i = 0; i < 4; ++i)
-        {
-            smemweight[weight_sts_addr + i] = weight_ldg_reg[i];  
-        }
-        for (int i = 0; i < 4; ++i)
-        {
-            smeminput[input_sts_addr + i * 32] = input_ldg_reg[i];  
-        } 
         __syncthreads();
-#pragma unroll
-        for (int subcrs = 0; subcrs < 8; ++subcrs)
-        {
-#pragma unroll
-            for (int i = 0; i < 4; ++i)
-            {
-                weight_frag[i] = smemweight[weight_lds_addr + subcrs * 132 + i];
-                weight_frag[i + 4] = smemweight[weight_lds_addr + subcrs * 132 + i + 16];
-            }
-#pragma unroll
-            for (int i = 0; i < 4; ++i)
-            {
-                input_frag[i] = smeminput[input_lds_addr + subcrs * 128 + i];
-                input_frag[i + 4] = smeminput[input_lds_addr + subcrs * 128 + i + 32];
-            }
 
-#pragma unroll
-            for (int i = 0; i < 8; ++i)
-            {
-#pragma unroll
-                for (int j = 0; j < 8; ++j)
-                {
-                    output_frag[i][j] = __hadd(output_frag[i][j], __hmul(weight_frag[i] , input_frag[j]));
-                }
+        // 计算4个k通道的累加
+        #pragma unroll
+        for (int i = 0; i < 16; i++) {
+            DTYPE input_val = sh_input[i][tx];
+            #pragma unroll
+            for (int j = 0; j < 4; j++) { // 遍历4个k通道
+                sum[j] = __hadd(sum[j], __hmul(input_val, 
+                    sh_weight[ty * 4 + j][i]));
             }
         }
+
         __syncthreads();
     }
 
-    // 计算输出偏移
-    int outOffset;
-#pragma unroll
-    for (int i = 0; i < 4; ++i)
-    {
-#pragma unroll
-        for (int j = 0; j < 4; ++j)
-        {
-            outOffset = z * param.k * param.Oh * param.Ow + (y + i) * param.Oh * param.Ow + x + j;
-            if (x + j < param.Oh * param.Ow && y + i < param.k)
-            {
-                param.output[outOffset] = output_frag[i][j];
-            }
-            outOffset = z * param.k * param.Oh * param.Ow + (y + i) * param.Oh * param.Ow + x + j + 32;
-            if (x + j + 32 < param.Oh * param.Ow && y + i < param.k)
-            {
-                param.output[outOffset] = output_frag[i][j + 4];
-            }
-            outOffset = z * param.k * param.Oh * param.Ow + (y + i + 16) * param.Oh * param.Ow + x + j;
-            if (x + j < param.Oh * param.Ow && y + i + 16 < param.k)
-            {
-                param.output[outOffset] = output_frag[i + 4][j];
-            }
-            outOffset = z * param.k * param.Oh * param.Ow + (y + i + 16) * param.Oh * param.Ow + x + j + 32;
-            if (x + j + 32 < param.Oh * param.Ow && y + i + 16 < param.k)
-            {
-                param.output[outOffset] = output_frag[i + 4][j + 4];
+    // 写入4个k通道的结果
+    if (ohow < param.Oh * param.Ow) {
+        #pragma unroll
+        for (int i = 0; i < 4; i++) {
+            int k = k_base + i;
+            if (k < param.k) {
+                int o_addr = n * param.k * param.Oh * param.Ow + 
+                           k * param.Oh * param.Ow + ohow;
+                param.output[o_addr] = sum[i];
             }
         }
     }
 }
-void conv2d_cuda_forward(param_t param)
-{
-    int blockx = ((param.Oh * param.Ow + 127) / 128); // blockx  number
-    int blocky = (param.k + 127) / 128;             // blocky  number
-    int blockz = param.n;                           // blockz  number
-    // 合并threadx与thready
-    int threadx = 256; // threadx number per block
-    int thready = 1;   // thready number per block
-    int threadz = 1;   // threadz number per block
-    dim3 block(threadx, thready, threadz);
+
+void conv2d_cuda_forward(param_t param) {
+    // 调整grid.y以适应4倍k通道（原block.y从16变为64）
+    int blockx = (param.Oh * param.Ow + 15) / 16;
+    int blocky = (param.k + 63) / 64;  // 每个block处理64个k
+    int blockz = param.n;
+    dim3 block(16, 16, 1);  // thread.y=16，每个线程处理4个k
     dim3 grid(blockx, blocky, blockz);
     implgemm<<<grid, block>>>(param);
 }
+
 
 // CUDA convolution backward implementation
 
