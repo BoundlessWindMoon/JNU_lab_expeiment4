@@ -1,5 +1,6 @@
 build/
-conv2d_cuda.egg-info/
+conv2d_baseline_fp32.egg-info/
+conv2d_optim*.egg-info/
 dist/
 pytorch/__pycache__/
 pytorch/acc.txt

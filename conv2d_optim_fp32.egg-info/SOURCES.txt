@@ -1,7 +1,0 @@
-README.md
-conv2d_optim_fp32.egg-info/PKG-INFO
-conv2d_optim_fp32.egg-info/SOURCES.txt
-conv2d_optim_fp32.egg-info/dependency_links.txt
-conv2d_optim_fp32.egg-info/top_level.txt
-cpp/conv2d_optim_fp32.cpp
-cuda/conv2d_optim_kernel_fp32.cu
