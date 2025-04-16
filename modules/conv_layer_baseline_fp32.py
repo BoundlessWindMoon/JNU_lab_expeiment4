@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import conv2d_baseline_cuda
+import conv2d_baseline_fp32
 import math
 from torch.nn.common_types import _size_1_t, _size_2_t, _size_3_t
 from torch.nn.modules.utils import _single, _pair, _triple, _reverse_repeat_tuple

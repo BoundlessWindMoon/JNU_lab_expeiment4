@@ -17,12 +17,12 @@ setup(
 
 # 基于 直接卷积 的卷积实现
 setup(
-    name='conv2d_baseline_cuda',
+    name='conv2d_baseline_fp32',
     include_dirs=["include"],
     ext_modules=[
-        CUDAExtension('conv2d_baseline_cuda', [
-            'cpp/conv2d_baseline_cuda.cpp',
-            'cuda/conv2d_baseline_cuda_kernel.cu',
+        CUDAExtension('conv2d_baseline_fp32', [
+            'cpp/conv2d_baseline_fp32.cpp',
+            'cuda/conv2d_baseline_kernel_fp32.cu',
         ]),
     ],
     cmdclass={
