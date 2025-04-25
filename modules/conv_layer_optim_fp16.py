@@ -7,15 +7,21 @@ from torch.nn.modules.utils import _single, _pair, _triple, _reverse_repeat_tupl
 
 from typing import Optional, List, Tuple, Union
 
+def nchw_to_nhwc(x):
+    return x.permute(0,2,3,1).contiguous()
+
+def nhwc_to_nchw(x):
+    return x.permute(0,3,1,2).contiguous()
+
 class Conv2DFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, weight, params):
         stride = _pair(params[0])
         padding = _pair(params[1])
-        output = conv2d.forward(input.contiguous(),weight.contiguous(),(stride),(padding))
-        variables = [input, weight, params]
-        ctx.save_for_backward(*variables)
-        return output
+        #input_nhwc = nchw_to_nhwc(input.contiguous())
+        output_nhwc = conv2d.forward(input, weight, stride, padding)
+        #output = nhwc_to_nchw(output_nhwc.contiguous())
+        return output_nhwc
 
     @staticmethod
     def backward(ctx, grad_output):

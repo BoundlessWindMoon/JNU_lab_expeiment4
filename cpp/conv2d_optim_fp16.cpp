@@ -29,13 +29,14 @@ torch::Tensor conv2d_forward(
     // Convolution parameter
 
     param_t param;
-// 使用模板函数安全获取半精度指针
+
     param.input = reinterpret_cast<DTYPE*>(input.data_ptr<torch::Half>());
     param.weight = reinterpret_cast<DTYPE*>(weight.data_ptr<torch::Half>());
     param.n = input.size(0);
     param.c = input.size(1);
     param.h = input.size(2);
     param.w = input.size(3);
+
     param.k = weight.size(0);
     param.r = weight.size(2);
     param.s = weight.size(3);
@@ -50,9 +51,7 @@ torch::Tensor conv2d_forward(
     param.Oh = outh;
     param.Ow = outw;
 
-    // auto output = torch::zeros(torch::IntArrayRef({input.size(0), weight.size(0), outh, outw}),
-    //                            input.options());
-    auto output = torch::zeros(torch::IntArrayRef({input.size(0), weight.size(0), outh, outw}),
+    auto output = torch::zeros(torch::IntArrayRef({input.size(0), weight.size(0),outh, outw}),
                                input.options().dtype(torch::kHalf));
 
     param.output = (DTYPE *)output.data_ptr();

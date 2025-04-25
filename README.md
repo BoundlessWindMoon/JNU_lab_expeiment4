@@ -27,25 +27,12 @@ $ cd pytorch
 vim test.py
 ```
 
-```python
-from conv_layer import Conv2d
-
-Conv2d(in_channels = 1,out_channels = 16,kernel_size = 3,stride = 1,padding = 1)
-
-```
-
-To use custom conv layer, just import `conv_layer.Conv2d`, and use it like `nn.Conv2d`.
 
 ## RUN
 
-run naive pytorch program
+run inference program
 
 ```
-$ python cifa_10.py
+$ python inference.py
 ```
 
-run personal program
-
-```
-$ python cifa_10_myConv.py
-```
