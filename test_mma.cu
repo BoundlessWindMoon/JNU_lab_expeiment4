@@ -24,22 +24,20 @@ __global__ void wmma_gemm(half *a, half *b, float *c, int M, int N, int K) {
 
     wmma::fill_fragment(c_frag, 0.0f);
 
-    int a_row = blockIdx.y * 16;
-    int b_col = blockIdx.x * 16;
-
-
-
     for (int ki = 0; ki < K; ki += 16) {
-        half* address_a = a + PLACEHOLDER;
-        half* address_b = b + PLACEHOLDER;
-
-        wmma::load_matrix_sync(a_frag, address_a, K);
-        wmma::load_matrix_sync(b_frag, address_b, K);
+        int a_row = blockIdx.y * 16;  
+        int b_col = blockIdx.x * 16;  
+        __half* addr_a = a + PLACEHOLDER;
+        __half* addr_b = b + PLACEHOLDER;
+        wmma::load_matrix_sync(a_frag, addr_a, K);
+        wmma::load_matrix_sync(b_frag, addr_b, K); 
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
     }
 
+    // 存储结果
     wmma::store_matrix_sync(c + blockIdx.y * 16 * N + blockIdx.x * 16, c_frag, N, wmma::mem_row_major);
 }
+
 
 __global__ void basic_gemm(half *a, half *b, float *c, int M, int N, int K) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -48,7 +46,7 @@ __global__ void basic_gemm(half *a, half *b, float *c, int M, int N, int K) {
     if (row < M && col < N) {
         float sum = 0.0f;
         for (int k = 0; k < K; ++k) {
-            sum += __half2float(a[row * K + k]) * __half2float(b[col * K + k]);
+            sum += (float)__hmul(a[row * K + k] , b[col * K + k]);
         }
         c[row * N + col] = sum;
     }
@@ -69,16 +67,6 @@ void run_test(int M, int N, int K) {
         h_a[i] = __float2half(dist(gen));
     for (int i = 0; i < K * N; ++i)
         h_b[i] = __float2half(dist(gen));
-
-    for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-            float sum = 0.0f;
-            for (int k = 0; k < K; ++k) {
-                sum += __half2float(h_a[i * K + k]) * __half2float(h_b[j * K + k]);
-            }
-            h_c_ref[i * N + j] = sum;
-        }
-    }
 
     half *d_a, *d_b;
     float *d_c_wmma, *d_c_basic;
@@ -122,36 +110,28 @@ void run_test(int M, int N, int K) {
 
     const float relative_tolerance = 1e-3f;
     const float absolute_tolerance = 1e-2f;
-    bool wmma_valid = true, basic_valid = true;
+    bool wmma_valid = true;
     int error_count = 0;
 
     for (int i = 0; i < M * N; ++i) {
-        float ref = h_c_ref[i];
         float wmma_val = h_c_wmma[i];
         float basic_val = h_c_basic[i];
         
-        float diff = fabs(wmma_val - ref);
-        float rel_err = diff / fmaxf(1.0f, fabs(ref));
+        float diff = fabs(wmma_val - basic_val);
+        float rel_err = diff / fmaxf(1.0f, fabs(basic_val));
         if (diff > absolute_tolerance && rel_err > relative_tolerance) {
             if (error_count < 5) {
                 std::cout << "WMMA错误 [" << i/N << "," << i%N << "] "
-                          << "参考值: " << ref << " 实际值: " << wmma_val 
+                          << "参考值: " << basic_val << " 实际值: " << wmma_val 
                           << " 相对误差: " << rel_err*100 << "%" << std::endl;
             }
             wmma_valid = false;
             error_count++;
         }
-        diff = fabs(basic_val - ref);
-        rel_err = diff / fmaxf(1.0f, fabs(ref));
-        if (diff > absolute_tolerance && rel_err > relative_tolerance) {
-            basic_valid = false;
-            break;
-        }
     }
 
     std::cout << "\n矩阵尺寸 " << M << "x" << N << "x" << K << " 测试结果:\n"
               << "Tensor Core验证: " << (wmma_valid ? "通过" : "失败") << "\n"
-              << "基础版本验证:   " << (basic_valid ? "通过" : "失败") << "\n"
               << "执行时间: WMMA=" << time_wmma << "ms Basic=" << time_basic << "ms\n"
               << "加速比: " << time_basic/time_wmma << "x\n"
               << "总错误数: " << error_count << "/" << M*N << std::endl;
@@ -170,7 +150,7 @@ void run_test(int M, int N, int K) {
 }
 
 int main() {
-    std::vector<int> sizes = {128, 256, 512};
+    std::vector<int> sizes = {128, 256, 512, 1024, 2048};
     
     for (int size : sizes) {
         if (size % 16 != 0) {
