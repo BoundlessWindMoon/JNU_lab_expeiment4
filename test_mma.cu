@@ -3,87 +3,188 @@
 #include <mma.h>
 #include <iostream>
 #include <cmath>
-
+#include <vector>
+#include <random>
+#include <cstdlib>
+#define PLACEHOLDER 0
 using namespace nvcuda;
 
+const int WARP_SIZE = 32;
+const int BLOCK_ROW_WARPS = 2;
+const int BLOCK_COL_WARPS = 2;
+const int WARP_ROW_TILES = 2;
+const int WARP_COL_TILES = 2;
+const int BLOCK_ROW_TILES = (WARP_ROW_TILES * BLOCK_ROW_WARPS);
+const int BLOCK_COL_TILES = (WARP_COL_TILES * BLOCK_COL_WARPS);
+
 __global__ void wmma_gemm(half *a, half *b, float *c, int M, int N, int K) {
-    // 声明矩阵片段
     wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
     wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b_frag;
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_frag;
 
-    // 初始化累加器
     wmma::fill_fragment(c_frag, 0.0f);
 
-    // 分块计算
+    int a_row = blockIdx.y * 16;
+    int b_col = blockIdx.x * 16;
+
+
+
     for (int ki = 0; ki < K; ki += 16) {
-        int a_row = blockIdx.y * 16;  // 当前行块起始位置
-        int b_col = blockIdx.x * 16;  // 当前列块起始位置
-        
-        wmma::load_matrix_sync(a_frag, a + a_row * K + ki, K);
-        wmma::load_matrix_sync(b_frag, b + ki * N + b_col, N);
+        half* address_a = a + PLACEHOLDER;
+        half* address_b = b + PLACEHOLDER;
+
+        wmma::load_matrix_sync(a_frag, address_a, K);
+        wmma::load_matrix_sync(b_frag, address_b, K);
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
     }
 
-    // 存储结果
     wmma::store_matrix_sync(c + blockIdx.y * 16 * N + blockIdx.x * 16, c_frag, N, wmma::mem_row_major);
 }
 
-int main() {
-    int M = 1024, N = 1024, K = 1024;
-    
-    // 主机端初始化
-    half *h_a = new half[M*K];
-    half *h_b = new half[K*N];
-    float *h_c = new float[M*N];
-    float *h_c_ref = new float[M*N];
+__global__ void basic_gemm(half *a, half *b, float *c, int M, int N, int K) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    for (int i = 0; i < M*K; i++) h_a[i] = __float2half(1.0f);
-    for (int i = 0; i < K*N; i++) h_b[i] = __float2half(1.0f);
-    for (int i = 0; i < M*N; i++) h_c_ref[i] = K;
+    if (row < M && col < N) {
+        float sum = 0.0f;
+        for (int k = 0; k < K; ++k) {
+            sum += __half2float(a[row * K + k]) * __half2float(b[col * K + k]);
+        }
+        c[row * N + col] = sum;
+    }
+}
 
-    // GPU内存分配
+void run_test(int M, int N, int K) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dist(0.1f, 1.0f);
+
+    half *h_a = new half[M * K];
+    half *h_b = new half[K * N];
+    float *h_c_wmma = new float[M * N];
+    float *h_c_basic = new float[M * N];
+    float *h_c_ref = new float[M * N];
+
+    for (int i = 0; i < M * K; ++i)
+        h_a[i] = __float2half(dist(gen));
+    for (int i = 0; i < K * N; ++i)
+        h_b[i] = __float2half(dist(gen));
+
+    for (int i = 0; i < M; ++i) {
+        for (int j = 0; j < N; ++j) {
+            float sum = 0.0f;
+            for (int k = 0; k < K; ++k) {
+                sum += __half2float(h_a[i * K + k]) * __half2float(h_b[j * K + k]);
+            }
+            h_c_ref[i * N + j] = sum;
+        }
+    }
+
     half *d_a, *d_b;
-    float *d_c;
-    cudaMalloc(&d_a, M*K*sizeof(half));
-    cudaMalloc(&d_b, K*N*sizeof(half));
-    cudaMalloc(&d_c, M*N*sizeof(float));
+    float *d_c_wmma, *d_c_basic;
+    cudaMalloc(&d_a, M * K * sizeof(half));
+    cudaMalloc(&d_b, K * N * sizeof(half));
+    cudaMalloc(&d_c_wmma, M * N * sizeof(float));
+    cudaMalloc(&d_c_basic, M * N * sizeof(float));
 
-    // 数据传输
-    cudaMemcpy(d_a, h_a, M*K*sizeof(half), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b, h_b, K*N*sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_a, h_a, M * K * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, K * N * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemset(d_c_wmma, 0, M * N * sizeof(float));
+    cudaMemset(d_c_basic, 0, M * N * sizeof(float));
 
-    // 执行核函数
-    dim3 block(32);  // 1 Warp = 32 线程
-    dim3 grid(M/16, N/16);
-    wmma_gemm<<<grid, block>>>(d_a, d_b, d_c, M, N, K);
-    cudaDeviceSynchronize();
+    dim3 grid_wmma((N + 15)/16, (M + 15)/16);
+    dim3 block_wmma(32);
 
-    // 结果回传
-    cudaMemcpy(h_c, d_c, M*N*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    
+    cudaEventRecord(start);
+    wmma_gemm<<<grid_wmma, block_wmma>>>(d_a, d_b, d_c_wmma, M, N, K);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float time_wmma;
+    cudaEventElapsedTime(&time_wmma, start, stop);
 
-    // 验证结果
-    float max_error = 0.0f;
-    for (int i = 0; i < M*N; i++) {
-        float error = std::abs(h_c[i] - h_c_ref[i]);
-        if (error > max_error) max_error = error;
+    dim3 block_basic(16, 16);
+    dim3 grid_basic((N + block_basic.x - 1) / block_basic.x,
+                    (M + block_basic.y - 1) / block_basic.y);
+    
+    cudaEventRecord(start);
+    basic_gemm<<<grid_basic, block_basic>>>(d_a, d_b, d_c_basic, M, N, K);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float time_basic;
+    cudaEventElapsedTime(&time_basic, start, stop);
+
+    cudaMemcpy(h_c_wmma, d_c_wmma, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_c_basic, d_c_basic, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+
+    const float relative_tolerance = 1e-3f;
+    const float absolute_tolerance = 1e-2f;
+    bool wmma_valid = true, basic_valid = true;
+    int error_count = 0;
+
+    for (int i = 0; i < M * N; ++i) {
+        float ref = h_c_ref[i];
+        float wmma_val = h_c_wmma[i];
+        float basic_val = h_c_basic[i];
+        
+        float diff = fabs(wmma_val - ref);
+        float rel_err = diff / fmaxf(1.0f, fabs(ref));
+        if (diff > absolute_tolerance && rel_err > relative_tolerance) {
+            if (error_count < 5) {
+                std::cout << "WMMA错误 [" << i/N << "," << i%N << "] "
+                          << "参考值: " << ref << " 实际值: " << wmma_val 
+                          << " 相对误差: " << rel_err*100 << "%" << std::endl;
+            }
+            wmma_valid = false;
+            error_count++;
+        }
+        diff = fabs(basic_val - ref);
+        rel_err = diff / fmaxf(1.0f, fabs(ref));
+        if (diff > absolute_tolerance && rel_err > relative_tolerance) {
+            basic_valid = false;
+            break;
+        }
     }
 
-    std::cout << "最大绝对误差: " << max_error << std::endl;
-    if (max_error < 1e-3f) {
-        std::cout << "验证通过！" << std::endl;
-    } else {
-        std::cout << "验证失败！" << std::endl;
-    }
+    std::cout << "\n矩阵尺寸 " << M << "x" << N << "x" << K << " 测试结果:\n"
+              << "Tensor Core验证: " << (wmma_valid ? "通过" : "失败") << "\n"
+              << "基础版本验证:   " << (basic_valid ? "通过" : "失败") << "\n"
+              << "执行时间: WMMA=" << time_wmma << "ms Basic=" << time_basic << "ms\n"
+              << "加速比: " << time_basic/time_wmma << "x\n"
+              << "总错误数: " << error_count << "/" << M*N << std::endl;
 
-    // 释放内存
     delete[] h_a;
     delete[] h_b;
-    delete[] h_c;
+    delete[] h_c_wmma;
+    delete[] h_c_basic;
     delete[] h_c_ref;
     cudaFree(d_a);
     cudaFree(d_b);
-    cudaFree(d_c);
+    cudaFree(d_c_wmma);
+    cudaFree(d_c_basic);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+}
 
+int main() {
+    std::vector<int> sizes = {128, 256, 512};
+    
+    for (int size : sizes) {
+        if (size % 16 != 0) {
+            std::cerr << "跳过非16倍数的尺寸: " << size << std::endl;
+            continue;
+        }
+        try {
+            std::cout << "\n======== 开始测试 " << size << " ========" << std::endl;
+            run_test(size, size, size);
+        } catch (const std::bad_alloc& e) {
+            std::cerr << "内存分配失败: " << e.what() << std::endl;
+            break;
+        }
+    }
+    
     return 0;
 }
